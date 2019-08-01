@@ -1,0 +1,249 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jun 12 10:54:46 2018
+
+@author: milic
+"""
+
+from PyQt5 import QtCore, QtGui, QtWidgets
+
+
+class GeneralTableView(QtWidgets.QTableView):
+    def __init__(self, parent=None):
+        super(GeneralTableView, self).__init__(parent=parent)
+        self._KANAL = None
+
+    @property
+    def programMjerenja(self):
+        return self._KANAL
+
+    @programMjerenja.setter
+    def programMjerenja(self, x):
+        if isinstance(x, int):
+            self._KANAL = x
+        else:
+            raise TypeError('Ulaz mora biti tipa "int".')
+
+
+class ConcentrationsTableView(GeneralTableView):
+    #signal for flag change, int->kanal, str->vrijeme u ISO formatu, bool->OK ili BAD
+    signal_flag_change = QtCore.pyqtSignal(int, str, str, bool)
+
+    def __init__(self, parent=None):
+        super(ConcentrationsTableView, self).__init__(parent=parent)
+        self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.ContiguousSelection)
+
+    def contextMenuEvent(self, event):
+        """reimplement context menu, allow for flag change"""
+        menu = QtWidgets.QMenu(self)
+        changeFlagOK = menu.addAction("Promjeni u dobar flag")
+        changeFlagBAD = menu.addAction("Promjeni u los flag")
+        action = menu.exec_(QtGui.QCursor().pos())
+        if action == changeFlagOK:
+            indeksi = self.selectedIndexes()
+            redovi = [i.row() for i in indeksi]
+            kanal = self.model().kanalId
+            vrijemeOd = self.model().headerData(min(redovi), QtCore.Qt.Vertical, QtCore.Qt.DisplayRole)
+            vrijemeDo = self.model().headerData(max(redovi), QtCore.Qt.Vertical, QtCore.Qt.DisplayRole)
+            self.signal_flag_change.emit(kanal, vrijemeOd, vrijemeDo, True)
+        elif action == changeFlagBAD:
+            indeksi = self.selectedIndexes()
+            redovi = [i.row() for i in indeksi]
+            kanal = self.model().kanalId
+            vrijemeOd = self.model().headerData(min(redovi), QtCore.Qt.Vertical, QtCore.Qt.DisplayRole)
+            vrijemeDo = self.model().headerData(max(redovi), QtCore.Qt.Vertical, QtCore.Qt.DisplayRole)
+            self.signal_flag_change.emit(kanal, vrijemeOd, vrijemeDo, False)
+            #TODO! emit signal for flag change
+        else:
+            #canceled action...
+            pass
+
+class CorrectionsTableView(GeneralTableView):
+    def __init__(self, parent=None):
+        super(CorrectionsTableView, self).__init__(parent=parent)
+        #expand with delegates and additional functionality...
+
+    def sredi_delegate_za_tablicu(self): #TODO!
+        model = self.model()
+        self.setItemDelegateForColumn(4, DeleteGumbDelegate(self))
+        self.setItemDelegateForColumn(5, CalcGumbDelegate(self))
+        for red in range(0, model.rowCount()):
+            self.closePersistentEditor(model.index(red, 4))
+            self.closePersistentEditor(model.index(red, 5))
+            self.openPersistentEditor(model.index(red, 4))
+            self.openPersistentEditor(model.index(red, 5))
+
+
+########### button delegates ###################################################
+#possible import fails could be QtWidgets?
+class DeleteGumbDelegate(QtWidgets.QItemDelegate):
+
+    #TODO! primoran overloadati signal zbog
+    #AttributeError: signal was not defined in the first super-class of class
+    commitData = QtCore.pyqtSignal(QtWidgets.QWidget)
+
+    def __init__(self, parent):
+        super(DeleteGumbDelegate, self).__init__(parent)
+
+    def createEditor(self, parent, option, index):
+        gumb = QtWidgets.QPushButton('X', parent=parent)
+        gumb.clicked.connect(self.delete_or_clear_row)
+        return gumb
+
+    def setEditorData(self, editor, index):
+        pass
+
+    def setModelData(self, editor, model, index):
+        pass
+
+    def delete_or_clear_row(self, ind):
+        #potencijalno uhvatiti parent?
+        # glupo do bola, ali moram pronaci wiew u kojem je embedan delegat
+        view = self.sender().parent().parent()
+        # kada imam view, mogu pronaci model
+        model = view.model()
+        # i poziciju delegata u tablici
+        indeks = view.indexAt(self.sender().pos())
+        #delete reda
+        model.removeRows(indeks.row())
+        self.commitData.emit(self.sender())
+
+
+class CalcGumbDelegate(QtWidgets.QItemDelegate):
+
+    #TODO! primoran overloadati signal zbog ...
+    #AttributeError: signal was not defined in the first super-class of class
+    commitData = QtCore.pyqtSignal(QtWidgets.QWidget)
+
+    def __init__(self, parent):
+        super(CalcGumbDelegate, self).__init__(parent)
+
+    def createEditor(self, parent, option, index):
+        gumb = QtWidgets.QPushButton('AB', parent=parent)
+        gumb.clicked.connect(self.calculate_AB_for_row)
+        return gumb
+
+    def setEditorData(self, editor, index):
+        pass
+
+    def setModelData(self, editor, model, index):
+        pass
+
+    def calculate_AB_for_row(self, x):
+        # glupo do bola, ali radi za sada
+        view = self.sender().parent().parent() #tableview
+        model = view.model() #model unutar table view-a
+        indeks = view.indexAt(self.sender().pos())
+        #boze... kako je ovo retardirano do bola...
+        #gui = view.parent().parent().parent().parent().parent().parent() #Display insatnca
+        dijalog = ABDialog()
+        ok = dijalog.exec_()
+        if ok:
+            a, b = dijalog.AB
+            model.set_AB_for_row(indeks.row(), a, b)
+            self.commitData.emit(self.sender())
+
+########### validator ##########################################################
+class DoubleValidatedLineEdit(QtWidgets.QLineEdit):
+    def __init__(self, val, parent=None):
+        super(DoubleValidatedLineEdit, self).__init__(parent=parent)
+        self.setValidator(QtGui.QDoubleValidator())  # set validation for double characters
+        self.setText(str(val))
+
+########### dialog for calculating AB ##########################################
+class ABDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super(ABDialog, self).__init__(parent=parent)
+        self.setModal(False)
+        self.setWindowTitle('Računanje A, B')
+        # OUTPUT VARS
+        self._AB = (1.0, 0.0)
+
+        self.span0 = DoubleValidatedLineEdit(1.0, parent=self)
+        self.span1 = DoubleValidatedLineEdit(1.0, parent=self)
+        self.zero0 = DoubleValidatedLineEdit(0.0, parent=self)
+        self.zero1 = DoubleValidatedLineEdit(0.0, parent=self)
+        self.Aparam = DoubleValidatedLineEdit(1.0, parent=self)
+        self.Bparam = DoubleValidatedLineEdit(0.0, parent=self)
+        # result
+        self.outputA = QtWidgets.QLabel('1.0')
+        self.outputB = QtWidgets.QLabel('0.0')
+        # gumbi
+        self.gumbOK = QtWidgets.QPushButton('Ok')
+        self.gumbCancel = QtWidgets.QPushButton('Cancel')
+
+        gridlay = QtWidgets.QGridLayout()
+        gridlay.addWidget(QtWidgets.QLabel('span 0 :'), 0, 0, 1, 1)
+        gridlay.addWidget(self.span0, 0, 1, 1, 1)
+        gridlay.addWidget(QtWidgets.QLabel('zero 0 :'), 0, 2, 1, 1)
+        gridlay.addWidget(self.zero0, 0, 3, 1, 1)
+        gridlay.addWidget(QtWidgets.QLabel('span 1 :'), 1, 0, 1, 1)
+        gridlay.addWidget(self.span1, 1, 1, 1, 1)
+        gridlay.addWidget(QtWidgets.QLabel('zero 1 :'), 1, 2, 1, 1)
+        gridlay.addWidget(self.zero1, 1, 3, 1, 1)
+        gridlay.addWidget(QtWidgets.QLabel('A :'), 2, 0, 1, 1)
+        gridlay.addWidget(self.Aparam, 2, 1, 1, 1)
+        gridlay.addWidget(QtWidgets.QLabel('B :'), 2, 2, 1, 1)
+        gridlay.addWidget(self.Bparam, 2, 3, 1, 1)
+        gridlay.addWidget(QtWidgets.QLabel('Out A'), 3, 0, 1, 1)
+        gridlay.addWidget(self.outputA, 3, 1, 1, 1)
+        gridlay.addWidget(QtWidgets.QLabel('Out B'), 3, 2, 1, 1)
+        gridlay.addWidget(self.outputB, 3, 3, 1, 1)
+        gridlay.addWidget(self.gumbOK, 5, 2, 1, 1)
+        gridlay.addWidget(self.gumbCancel, 5, 3, 1, 1)
+        self.setLayout(gridlay)
+
+        self.gumbOK.clicked.connect(self.accept)
+        self.gumbCancel.clicked.connect(self.reject)
+        self.span0.textChanged.connect(self.racunaj_AB)
+        self.span1.textChanged.connect(self.racunaj_AB)
+        self.zero0.textChanged.connect(self.racunaj_AB)
+        self.zero1.textChanged.connect(self.racunaj_AB)
+        self.Aparam.textChanged.connect(self.racunaj_AB)
+        self.Bparam.textChanged.connect(self.racunaj_AB)
+
+    @property
+    def AB(self):
+        return self._AB
+
+    @AB.setter
+    def AB(self, x):
+        self._AB = x
+
+    def showEvent(self, event):
+        self.reset_params()
+        super(ABDialog, self).showEvent(event)
+
+    def reset_params(self):
+        self.span0.setText('1.0')
+        self.span1.setText('1.0')
+        self.zero0.setText('0.0')
+        self.zero1.setText('0.0')
+        self.Aparam.setText('1.0')
+        self.Bparam.setText('0.0')
+        self.outputA.setText('1.0')
+        self.outputB.setText('0.0')
+
+    def racunaj_AB(self):
+        try:
+            s0, s1 = float(self.span0.text()), float(self.span1.text())
+            z0, z1 = float(self.zero0.text()), float(self.zero1.text())
+            ab = (float(self.Aparam.text()), float(self.Bparam.text()))
+            outA, outB = self.calcab(s0, s1, z0, z1, ab)
+            self.AB = (outA, outB)
+            self.outputA.setText(str(outA))
+            self.outputB.setText(str(outB))
+        except ValueError:
+            self.AB = (None, None)
+            self.outputA.setText('None')
+            self.outputB.setText('None')
+
+    def calcab(self, s0, s1, z0, z1, ab):
+        a = (s0 - z0) / (s1 - z1)
+        b = z0 - a * z1
+        aa = a * ab[0]
+        bb = ab[0] * b + ab[1]
+        return aa, bb
+
+

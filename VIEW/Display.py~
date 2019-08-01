@@ -1,0 +1,247 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jun  5 11:21:04 2018
+
+@author: milic
+"""
+
+import logging
+from PyQt5 import QtCore, QtGui, QtWidgets
+from app.view.TableViews import ConcentrationsTableView
+from app.view.TableViews import CorrectionsTableView
+from app.view.Canvas import Kanvas, MyPlotNavigation
+from app.model.CorrectionModel import CorrectionTableModel
+
+
+class Display(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        """
+        display widget setup
+        """
+        super(Display, self).__init__(parent=parent)
+        #dokument instance
+        self.dokument = None #TODO! this needs empty dummy document instance...
+        ################ Display elementi, malo detaljnije... ##################
+        #imamo 3 TAB WIDGETA (po jedan za koncentraciju, korekciju i statistiku)
+        self.concentrationTabWidget = QtWidgets.QTabWidget()
+        self.concentrationTabWidget.setMovable(True)
+        self.correctionTabWidget = QtWidgets.QTabWidget()
+        self.correctionTabWidget.setMovable(True)
+        self.statisticsTabWidget = QtWidgets.QTabWidget()
+        self.statisticsTabWidget.setMovable(True)
+        #Svaki pojedini TAB WIDGET moze imati vise tabova (QTableView instnce)
+        #svaka pojedinacna tablica se sprema pod ključem kanala (programMjerenjaId) u odgovarajucu mapu
+        #radi lakseg referenciranja
+        self.concentrationTableViews = {} #container for QTabWiew objects za concentration view
+        self.correctionTableViews = {} #container for QTabView objects za correction view
+        self.statisticsTableViews = {} #container for QTabView objects za statistics
+        #trenutni stump i placeholder za prostor za crtanje...
+        self.kanvas = Kanvas(parent=self) #placeholder -> kanvas + navigation toolbar #TODO! bitno
+        self.plotNavigation = MyPlotNavigation(self.kanvas, self)
+
+        #layout managment
+        self.splitter1 = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.splitter2 = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.splitter3 = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.splitter1.addWidget(self.concentrationTabWidget)
+        self.splitter1.addWidget(self.splitter2)
+        self.splitter2.addWidget(self.plotNavigation)
+        self.splitter2.addWidget(self.kanvas)
+        self.splitter2.addWidget(self.splitter3)
+        self.splitter3.addWidget(self.correctionTabWidget)
+        self.splitter3.addWidget(self.statisticsTabWidget)
+        self.glavniLayout = QtWidgets.QHBoxLayout()
+        self.glavniLayout.addWidget(self.splitter1)
+        self.setLayout(self.glavniLayout)
+
+        #CONNECTIONS
+        #link & sync tab changes...promjena taba se reflektira i na druge prozore
+        self.concentrationTabWidget.currentChanged.connect(self.sync_tabs)
+        self.correctionTabWidget.currentChanged.connect(self.sync_tabs)
+        self.statisticsTabWidget.currentChanged.connect(self.sync_tabs)
+        #navigation toolbar needs to signal tool use to canvas...
+        self.plotNavigation.signal_tools_in_use.connect(self.kanvas.nav_tools_in_use)
+
+    def sync_tabs(self, indeks):
+        #dohvati kanal
+        kanal = self.sender().currentWidget().programMjerenja
+        #flip concentration
+        i = self.concentrationTabWidget.indexOf(self.concentrationTableViews[kanal]) #pronađi indeks u tabu za kanal
+        self.concentrationTabWidget.setCurrentIndex(i) #set pronadjenog indeksa
+        #flip correction
+        i = self.correctionTabWidget.indexOf(self.correctionTableViews[kanal])
+        self.correctionTabWidget.setCurrentIndex(i)
+        #flip statistics
+        i = self.statisticsTabWidget.indexOf(self.statisticsTableViews[kanal])
+        self.statisticsTabWidget.setCurrentIndex(i)
+        #promjena aktivne tablice mora promjeniti fokus crtanja...
+        self.kanvas.promjeni_aktivni_kanal(kanal) #TODO! redraw...
+
+    def sync_view_scrollbars(self, value):
+        """
+        pomicanje jednog slidera table view-a mora se sinhronizirati sa ostalima...
+        """
+        #dohvati kanal i prebaci vertical silebar na value...
+        for table in self.concentrationTableViews.values():
+            table.verticalScrollBar().setValue(value)
+
+    def sync_koncentracija_table_selection(self, modelindex):
+        """
+        sync izbor pojedinog reda
+        """
+        red = modelindex.row()
+        for table in self.concentrationTableViews.values():
+            table.selectRow(red)
+
+    def testprintflagchange(self, kanal, od, do, flag):
+        #TODO! flag change...
+        print("#"*60)
+        print("SOMEONE TRIGGERED A FLAG CHANGE REQUEST")
+        print("--".join([str(kanal), str(od), str(do), str(flag)]))
+
+
+    def set_dokument(self, dok):
+        """
+        Pass instance of dokument into display... this triggers gui update
+        - name and number of tabs
+        - connections between document models for each tab with rest of gui...
+        """
+        #TODO!
+        # zapamti referencu na dokument
+        self.dokument = dok
+        # napravi i povezi tabove
+        self.generiraj_nove_tabove()
+        # spoji modele iz dokumenta sa gui-djelovima displaya
+        self.connect_models()
+        #postavi aktivni kanal u kanvas, bez crtanja
+        aktivni_kanal = self.concentrationTabWidget.currentWidget().model().kanalId
+        self.kanvas.promjeni_aktivni_kanal(aktivni_kanal, draw=False)
+        # prosljedi instancu dokumenta kanvasu...
+        self.kanvas.set_dokument(self.dokument)
+
+    def connect_models(self):
+        """
+        Povezivanje view-ova i modela u operativnu cjelinu
+        """
+        for kanal in self.dokument.sviKanali:
+            #postavljanje koncentracijskog modela
+            print('linking model to view : ', kanal)
+            self.concentrationTableViews[kanal].setModel(self.dokument.get_datastore(kanal).koncentracija)
+            #postavljanje korekcijskog modela
+            self.correctionTableViews[kanal].setModel(self.dokument.get_datastore(kanal).korekcija)
+            self.correctionTableViews[kanal].sredi_delegate_za_tablicu()
+            self.dokument.get_datastore(kanal).korekcija.update_persistent_delegates.connect(self.correctionTableViews[kanal].sredi_delegate_za_tablicu)
+            print('update start')
+            self.concentrationTableViews[kanal].update()
+            print('update end')
+            print('sanity check:')
+            print('indeks 0,0 = ', str(round(self.concentrationTableViews[kanal].model().dataframe.iloc[0,0], 2)))
+
+    def generiraj_nove_tabove(self):
+        """ stvori i poslazi nove tabove u predvidjene prozore """
+        #block signals
+        self.concentrationTabWidget.blockSignals(True)
+        self.correctionTabWidget.blockSignals(True)
+        self.statisticsTabWidget.blockSignals(True)
+        #izbrisi postojece tabove
+        self.concentrationTabWidget.clear()
+        self.correctionTabWidget.clear()
+        self.statisticsTabWidget.clear()
+        #stari displayevi za tablice su i memoriji... trebaju se izbrisati
+        self.concentrationTableViews.clear() #container za QTabView objekte za koncentracija view
+        self.correctionTableViews.clear() #container for QTabView objects za correction view
+        self.statisticsTableViews.clear() #container for QTabView objects za statistics
+        #sada treba generirati nove tablice za prikaz podataka i spremiti ih na pripremljena mjesta
+        for kanal in self.dokument.sviKanali:
+            #popuni koncentracijske tabele
+            #TODO! srediti opis stupca iz dokumenta -- srediti neki property ili funkciju
+            self.concentrationTableViews[kanal] = ConcentrationsTableView()
+            self.concentrationTableViews[kanal].programMjerenja = kanal
+            tabname = self.dokument.get_opis_kanala(kanal)
+            indeks = self.concentrationTabWidget.addTab(self.concentrationTableViews[kanal], tabname)
+            #popuni korekcijske tabele
+            self.correctionTableViews[kanal] = CorrectionsTableView()
+            self.correctionTableViews[kanal].programMjerenja = kanal
+            tabname = self.dokument.get_opis_kanala(kanal)
+            indeks = self.correctionTabWidget.addTab(self.correctionTableViews[kanal], tabname)
+            #popuni statisticke tabele
+            self.statisticsTableViews[kanal] = ConcentrationsTableView() #TODO! PLACEHOLDER
+            self.statisticsTableViews[kanal].programMjerenja = kanal
+            tabname = self.dokument.get_opis_kanala(kanal)
+            indeks = self.statisticsTabWidget.addTab(self.statisticsTableViews[kanal], tabname)
+
+        #sync operations for koncentracija table views
+        for tablica in self.concentrationTableViews.values():
+            #scroll movements
+            tablica.verticalScrollBar().valueChanged.connect(self.sync_view_scrollbars)
+            #selection by left click
+            tablica.clicked.connect(self.sync_koncentracija_table_selection)
+            #context menu flag change
+            tablica.signal_flag_change.connect(self.testprintflagchange) #TODO!
+
+        #unblock signals
+        self.concentrationTabWidget.blockSignals(False)
+        self.correctionTabWidget.blockSignals(False)
+        self.statisticsTabWidget.blockSignals(False)
+
+
+#    def generate_tab_views(self, dokument, listaKanala):
+#        """
+#        Cilj je generirati (uz pomoc dokumenta) tableView instance za modele.
+#        Svaki table mora biti u svojem tabu pod nazivom komponente
+#        Svaka promjena taba mora pomaknuti ostale tabove na isti page...
+#        """
+#        #TODO! fejkanje modela
+#        self.fejkModels = {} #ovo mora biti referenca na member dokumenta koji sardzi dict datastoreova spremljenih po programMjerenjaId (kanalu)
+#        #TODO! treba ubaciti modele unutra...
+#        #block signals
+#        self.concentrationTabWidget.blockSignals(True)
+#        self.correctionTabWidget.blockSignals(True)
+#        self.statisticsTabWidget.blockSignals(True)
+#        #clear all tabs
+#        #does not delete objects, just removes them from tab
+#        self.concentrationTabWidget.clear()
+#        self.correctionTabWidget.clear()
+#        self.statisticsTabWidget.clear()
+#        #this should consign old widgets to die off.. possible need to disconnect from all signals
+#        self.concentrationTableViews = {}
+#        self.correctionTableViews = {} #container for QTabView objects za correction view
+#        self.statisticsTableViews = {} #container for QTabView objects za statistics
+#        #populate all tabs
+#        for kanal in listaKanala:
+#            #popuni koncentracijske tabele
+#            self.concentrationTableViews[kanal] = ConcentrationsTableView()
+#            self.concentrationTableViews[kanal].programMjerenja = kanal
+#            formula = dokument.mjerenja[kanal]['komponentaFormula']
+#            postaja = dokument.mjerenja[kanal]['postajaNaziv']
+#            jedinica = dokument.mjerenja[kanal]['komponentaMjernaJedinica']
+#            tabname = "{0} : {1} ({2})".format(str(postaja), str(formula), str(jedinica))
+#            indeks = self.concentrationTabWidget.addTab(self.concentrationTableViews[kanal], tabname)
+#            #popuni korekcijske tabele
+#            self.correctionTableViews[kanal] = CorrectionsTableView() #TODO! PLACEHOLDER
+#            self.correctionTableViews[kanal].programMjerenja = kanal
+#            formula = dokument.mjerenja[kanal]['komponentaFormula']
+#            postaja = dokument.mjerenja[kanal]['postajaNaziv']
+#            jedinica = dokument.mjerenja[kanal]['komponentaMjernaJedinica']
+#            tabname = "{0} : {1} ({2})".format(str(postaja), str(formula), str(jedinica))
+#            indeks = self.correctionTabWidget.addTab(self.correctionTableViews[kanal], tabname)
+#            #popuni statisticke tabele
+#            self.statisticsTableViews[kanal] = ConcentrationsTableView() #TODO! PLACEHOLDER
+#            self.statisticsTableViews[kanal].programMjerenja = kanal
+#            formula = dokument.mjerenja[kanal]['komponentaFormula']
+#            postaja = dokument.mjerenja[kanal]['postajaNaziv']
+#            jedinica = dokument.mjerenja[kanal]['komponentaMjernaJedinica']
+#            tabname = "{0} : {1} ({2})".format(str(postaja), str(formula), str(jedinica))
+#            indeks = self.statisticsTabWidget.addTab(self.statisticsTableViews[kanal], tabname)
+#            #unblock signals
+#            self.concentrationTabWidget.blockSignals(False)
+#            self.correctionTabWidget.blockSignals(False)
+#            self.statisticsTabWidget.blockSignals(False)
+#            #TODO! create and insert fjek models
+#            self.fejkModels[kanal] = CorrectionTableModel()
+#            self.correctionTableViews[kanal].setModel(self.fejkModels[kanal])
+#            self.correctionTableViews[kanal].sredi_delegate_za_tablicu()
+#            #link update...
+#            self.fejkModels[kanal].update_persistent_delegates.connect(self.correctionTableViews[kanal].sredi_delegate_za_tablicu)
+
+
